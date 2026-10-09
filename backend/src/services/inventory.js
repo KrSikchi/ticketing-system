@@ -6,40 +6,54 @@
 const config = require('../config');
 const { redis } = require('../redis');
 
-/** Fire-and-forget Pub/Sub notification. A failure here must never fail a booking request. */
+/** Fire-and-forget Pub/Sub notification with timestamp for sequence ordering. */
 function publish(unit, state) {
   try {
-    redis.publish(config.channel, JSON.stringify({ unit, state })).catch(() => {});
+    redis.publish(config.channel, JSON.stringify({ unit, state, ts: Date.now() })).catch(() => {});
   } catch (_) {
     /* best effort only */
   }
 }
 
 /**
- * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD'.
+ * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD' | 'NOT_READY'.
  * Re-holding your own seat refreshes the TTL (same user -> 'OK').
  */
-async function holdSeat(unit, userId) {
-  const status = await redis.hold(config.soldKey(), config.holdKey(unit), unit, userId, config.HOLD_TTL_MS);
+async function holdSeat(unit, userId, bookingId = '') {
+  const status = await redis.hold(
+    config.readyKey(),
+    config.soldKey(),
+    config.holdKey(unit),
+    unit,
+    userId,
+    config.HOLD_TTL_MS,
+    bookingId || '',
+  );
   if (status === 'OK') publish(unit, 'held');
   return status;
 }
 
-/** Release a hold if (and only if) this user owns it. Returns true when a hold was removed. */
-async function releaseSeat(unit, userId) {
-  const released = await redis.release(config.holdKey(unit), userId);
+/** Release a hold if (and only if) this user owns it for this booking. Returns true when removed. */
+async function releaseSeat(unit, userId, bookingId = '') {
+  const released = await redis.release(config.holdKey(unit), userId, bookingId || '');
   if (released === 1) publish(unit, 'free');
   return released === 1;
 }
 
 /**
  * Turn a valid hold into a permanent sale and enqueue the booking for Postgres.
- * Returns 'OK' | 'SOLD' | 'EXPIRED' (idempotent: confirming the same bookingId twice is 'OK').
+ * Returns 'OK' | 'SOLD' | 'EXPIRED' | 'NOT_READY' (idempotent: confirming the same bookingId twice is 'OK').
  */
 async function confirmSeat(unit, userId, bookingId) {
   const status = await redis.confirm(
-    config.soldKey(), config.holdKey(unit), config.streamKey,
-    unit, userId, bookingId, config.EVENT_ID,
+    config.readyKey(),
+    config.soldKey(),
+    config.holdKey(unit),
+    config.streamKey,
+    unit,
+    userId,
+    bookingId,
+    config.EVENT_ID,
   );
   if (status === 'OK') publish(unit, 'sold');
   return status;
@@ -69,4 +83,4 @@ async function getSeatMap() {
   return seats;
 }
 
-module.exports = { holdSeat, releaseSeat, confirmSeat, getSeatMap };
+module.exports = { holdSeat, releaseSeat, confirmSeat, getSeatMap, publish };

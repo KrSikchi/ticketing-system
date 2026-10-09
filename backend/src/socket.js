@@ -1,7 +1,6 @@
 // Live seat-state fan-out over Socket.IO. A dedicated Redis connection subscribes to the
 // "seat-events" channel (published by inventory.js from ANY API instance) and every message is
 // re-emitted to this instance's clients as event "seat". New clients get the full map once.
-// Everything here is best-effort: a failure must never affect booking.
 'use strict';
 
 const { Server } = require('socket.io');
@@ -11,7 +10,8 @@ const { getSeatMap } = require('./services/inventory');
 
 function attachSocket(httpServer) {
   const io = new Server(httpServer, {
-    cors: { origin: '*' }, // hackathon: any origin may watch the seat map
+    cors: { origin: '*' },
+    transports: ['websocket', 'polling'],
     serveClient: false,
   });
 
@@ -28,7 +28,7 @@ function attachSocket(httpServer) {
   subscriber.on('message', (channel, message) => {
     if (channel !== config.channel) return;
     try {
-      io.emit('seat', JSON.parse(message)); // {unit, state: 'held' | 'free' | 'sold'}
+      io.emit('seat', JSON.parse(message)); // {unit, state: 'held' | 'free' | 'sold', ts}
     } catch (_) {
       /* malformed message: ignore */
     }
@@ -36,7 +36,12 @@ function attachSocket(httpServer) {
 
   io.on('connection', async (socket) => {
     try {
-      socket.emit('seatmap', { event: config.EVENT_ID, total: config.TOTAL_UNITS, seats: await getSeatMap() });
+      socket.emit('seatmap', {
+        event: config.EVENT_ID,
+        total: config.TOTAL_UNITS,
+        seats: await getSeatMap(),
+        version: Date.now(),
+      });
     } catch (err) {
       socket.emit('seatmap_error', { error: 'SERVICE_UNAVAILABLE' });
     }

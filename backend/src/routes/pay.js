@@ -15,7 +15,8 @@ const router = express.Router();
 /**
  * Translate a settle() result into the HTTP contract shared by /pay and /book:
  *   BOOKED -> 200, SOLD -> 409, EXPIRED -> 410, PAYMENT_FAILED -> 402,
- *   PENDING -> 202 (another call is mid-payment), NO_SESSION -> 404, FORBIDDEN -> 403
+ *   PENDING -> 202 (another call is mid-payment), NO_SESSION -> 404, FORBIDDEN -> 403,
+ *   NOT_READY -> 503
  */
 function sendSettlement(res, result) {
   const { outcome, unit, bookingId } = result;
@@ -32,6 +33,8 @@ function sendSettlement(res, result) {
       return res.status(202).json({ ok: false, status: 'PENDING', reason: 'PAYMENT_IN_PROGRESS', bookingId, unit });
     case 'FORBIDDEN':
       return res.status(403).json({ ok: false, reason: 'FORBIDDEN', bookingId });
+    case 'NOT_READY':
+      return res.status(503).json({ ok: false, error: 'SERVICE_UNAVAILABLE', reason: 'NOT_READY', bookingId });
     case 'NO_SESSION':
     default:
       return res.status(404).json({ ok: false, reason: 'NO_SESSION', bookingId });

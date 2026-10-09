@@ -10,12 +10,14 @@ const config = require('./config');
 
 const LUA_DIR = path.join(__dirname, 'lua');
 
-/** The four atomic scripts and how many KEYS each one takes (ioredis sends EVALSHA, falls back to EVAL). */
+/** The atomic scripts and how many KEYS each one takes (ioredis sends EVALSHA, falls back to EVAL). */
 const SCRIPTS = {
-  hold: { numberOfKeys: 2, lua: fs.readFileSync(path.join(LUA_DIR, 'hold.lua'), 'utf8') },
-  confirm: { numberOfKeys: 3, lua: fs.readFileSync(path.join(LUA_DIR, 'confirm.lua'), 'utf8') },
+  hold: { numberOfKeys: 3, lua: fs.readFileSync(path.join(LUA_DIR, 'hold.lua'), 'utf8') },
+  confirm: { numberOfKeys: 4, lua: fs.readFileSync(path.join(LUA_DIR, 'confirm.lua'), 'utf8') },
   release: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'release.lua'), 'utf8') },
   bucket: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'bucket.lua'), 'utf8') },
+  begin_payment: { numberOfKeys: 2, lua: fs.readFileSync(path.join(LUA_DIR, 'begin_payment.lua'), 'utf8') },
+  finish_payment: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'finish_payment.lua'), 'utf8') },
 };
 
 /**

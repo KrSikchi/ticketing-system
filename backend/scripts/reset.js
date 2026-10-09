@@ -1,7 +1,6 @@
 // Reset everything to "200 free seats": deletes the event's Redis keys (holds, sold hash), payment
 // sessions, rate-limit buckets and the bookings stream (SCAN, never KEYS), truncates the Postgres
-// tables, (re)applies db/schema.sql idempotently and recreates the consumer group.
-// Safe to run while start-all is up: the workers recover from the recreated group automatically.
+// tables, (re)applies db/schema.sql idempotently, recreates the consumer group, and sets ready sentinel.
 'use strict';
 
 const fs = require('fs');
@@ -46,9 +45,12 @@ async function main() {
     if (!String(err.message).includes('BUSYGROUP')) throw err;
   }
 
+  // Set readiness sentinel so immediate requests succeed
+  await redis.set(config.readyKey(), '1');
+
   console.log(`[reset] cleared ${evtDeleted} event keys (holds + sold hash) for event ${config.EVENT_ID}`);
   console.log(`[reset] cleared ${payDeleted} payment sessions, ${rlDeleted} rate-limit buckets`);
-  console.log(`[reset] ${streamDeleted ? 'deleted' : 'no'} "${config.streamKey}" stream; consumer group "${config.group}" ready`);
+  console.log(`[reset] ${streamDeleted ? 'deleted' : 'no'} "${config.streamKey}" stream; consumer group "${config.group}" ready; ready sentinel set`);
   console.log(`[reset] done - ${config.TOTAL_UNITS} seats free`);
 }
 

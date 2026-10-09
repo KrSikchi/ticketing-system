@@ -35,12 +35,19 @@ async function sweep() {
       scanned += 1;
       if (session.status !== 'PAID') continue;
 
+      const bookingId = keys[i].slice(config.payKey('').length);
+
+      // Guard against malformed sessions (missing metadata)
+      if (!session.user || !session.unit) {
+        console.warn(`${TAG} alert: session ${bookingId} has missing user/unit (${session.user}, ${session.unit}) - skipping blind refund`);
+        continue;
+      }
+
       // pay() sets PEXPIRE PAID_SESSION_TTL_MS at the moment of payment, so the elapsed time
       // since payment (by Redis's clock) is PAID_SESSION_TTL_MS - PTTL.
       const ageMs = config.PAID_SESSION_TTL_MS - pttl;
       if (pttl < 0 || ageMs < MIN_PAID_AGE_MS) continue;
 
-      const bookingId = keys[i].slice(config.payKey('').length);
       const soldTo = await redis.hget(config.soldKey(), String(session.unit));
       if (soldTo === bookingId) continue; // all good: paid AND owns the seat
 

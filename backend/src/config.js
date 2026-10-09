@@ -57,7 +57,9 @@ const config = Object.freeze({
   // ---- Redis key builders -------------------------------------------------------------------
   // The {EVENT_ID} braces are a Redis Cluster hash-tag: every key of one event hashes to the same
   // slot, so the multi-key Lua scripts keep working if this is ever moved to Redis Cluster.
-  /** Per-seat hold key. Value = userId holding the seat, TTL = HOLD_TTL_MS. */
+  /** Readiness sentinel key: set only after Postgres->Redis rehydration completes. */
+  readyKey: () => `evt:{${EVENT_ID}}:ready`,
+  /** Per-seat hold key. Value = userId or userId|bookingId holding the seat, TTL = HOLD_TTL_MS. */
   holdKey: (unit) => `evt:{${EVENT_ID}}:hold:${unit}`,
   /** Hash of sold seats: field = unit, value = bookingId. */
   soldKey: () => `evt:{${EVENT_ID}}:sold`,
@@ -65,8 +67,8 @@ const config = Object.freeze({
   payKey: (id) => `pay:${id}`,
   /** Per-user token bucket for the rate limiter. */
   rlKey: (userId) => `rl:${userId}`,
-  /** Redis Stream that carries confirmed bookings to the persist workers. */
-  streamKey: 'bookings',
+  /** Redis Stream that carries confirmed bookings to the persist workers (shares event hash tag). */
+  streamKey: `evt:{${EVENT_ID}}:bookings`,
   /** Consumer group name on the stream. */
   group: 'persisters',
   /** Pub/Sub channel for live seat-state events (consumed by socket.js). */

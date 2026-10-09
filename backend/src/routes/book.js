@@ -1,4 +1,4 @@
-// POST /book - convenience endpoint used by the load test: hold + checkout + pay + confirm in ONE
+// POST /book - convenience endpoint: hold + checkout + pay + confirm in ONE
 // request. Every outcome is one of: 200 BOOKED, 409 SOLD, 409 HELD, 402 PAYMENT_FAILED,
 // 410 EXPIRED, 429 RATE_LIMITED, 503 SERVICE_UNAVAILABLE.
 'use strict';
@@ -19,17 +19,23 @@ router.post('/book', identify, rateLimit, validateUnit, validateBookingId({ opti
   const { unit, userId } = req;
   const bookingId = req.bookingId || crypto.randomUUID();
 
-  // 1. Atomically take the seat (or learn that it is gone).
-  const held = await holdSeat(unit, userId);
-  if (held !== 'OK') return res.status(409).json({ ok: false, reason: held, unit }); // 'SOLD' | 'HELD'
+  // 1. Atomically take the seat (or learn that it is gone) with composite bookingId tracking.
+  const held = await holdSeat(unit, userId, bookingId);
+  if (held === 'NOT_READY') {
+    return res.status(503).json({ ok: false, error: 'SERVICE_UNAVAILABLE', reason: 'NOT_READY', unit });
+  }
+  if (held !== 'OK') {
+    return res.status(409).json({ ok: false, reason: held, unit }); // 'SOLD' | 'HELD'
+  }
 
   // 2. Open the payment session against the hold we just took.
   const session = await createSession(userId, unit, bookingId);
   if (session.error === 'NO_HOLD') {
-    // Only possible with a tiny HOLD_TTL_MS: the hold already expired -> same answer as a late /pay.
     return res.status(410).json({ ok: false, reason: 'EXPIRED', bookingId, unit });
   }
-  if (session.error) return res.status(409).json({ ok: false, reason: session.error, bookingId, unit });
+  if (session.error) {
+    return res.status(409).json({ ok: false, reason: session.error, bookingId, unit });
+  }
 
   // 3. Charge, then confirm (PAID) or release (FAILED) - identical to POST /pay.
   const result = await settle(userId, bookingId);
