@@ -6,7 +6,7 @@ const http = require('http');
 const { cleanRedis } = require('./helpers');
 const app = require('../src/app');
 const { attachSocket } = require('../src/socket');
-const { holdSeat, releaseSeat, confirmSeat, getSeatMap } = require('../src/services/inventory');
+const { holdSeat, releaseSeat, confirmSeat, getSeatMap, invalidateSeatMapCache } = require('../src/services/inventory');
 const crypto = require('crypto');
 
 describe('Step 6c: Monotonic sequence numbers in seat events and seatmap snapshot', () => {
@@ -70,6 +70,7 @@ describe('Step 6c: Monotonic sequence numbers in seat events and seatmap snapsho
         }
       }
 
+      if (typeof invalidateSeatMapCache === 'function') invalidateSeatMapCache();
       const mapAfter = await getSeatMap();
       assert.equal(mapAfter.seq, seatEvents[seatEvents.length - 1].seq);
     } finally {

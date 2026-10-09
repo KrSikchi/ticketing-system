@@ -61,6 +61,8 @@ const config = Object.freeze({
   IP_BUCKET_CAPACITY: num('IP_BUCKET_CAPACITY', 15000),
   IP_BUCKET_REFILL_PER_SEC: num('IP_BUCKET_REFILL_PER_SEC', 5000),
 
+  SEATMAP_CACHE_MS: num('SEATMAP_CACHE_MS', 250),
+
   WORKER_ID: str('WORKER_ID', 'w1'),
 
   // ---- Redis key builders -------------------------------------------------------------------

@@ -16,6 +16,7 @@ const config = require('../src/config');
 const { redis, waitUntilReady } = require('../src/redis');
 const { pool } = require('../src/pg');
 const app = require('../src/app');
+const inventory = require('../src/services/inventory');
 
 async function scanDelete(pattern) {
   let cursor = '0';
@@ -38,6 +39,9 @@ async function cleanRedis({ setReady = true } = {}) {
   if (config.legacyStreamKey) await redis.del(config.legacyStreamKey);
   if (setReady && typeof config.readyKey === 'function') {
     await redis.set(config.readyKey(), '1');
+  }
+  if (typeof inventory.invalidateSeatMapCache === 'function') {
+    inventory.invalidateSeatMapCache();
   }
 }
 

@@ -58,11 +58,17 @@ async function confirmSeat(unit, userId, bookingId) {
   return status;
 }
 
-/**
- * Snapshot of every seat: [{ unit, state: 'sold' | 'held' | 'free' }] (with non-enumerable .seq).
- * One pipeline round-trip: HGETALL sold + MGET of all hold keys + GET seq.
- */
-async function getSeatMap() {
+let cachedSeatMap = null;
+let cachedSeatMapAt = 0;
+let seatMapInflight = null;
+
+function invalidateSeatMapCache() {
+  cachedSeatMap = null;
+  cachedSeatMapAt = 0;
+  seatMapInflight = null;
+}
+
+async function fetchSeatMapFromRedis() {
   const holdKeys = [];
   for (let unit = 1; unit <= config.TOTAL_UNITS; unit++) holdKeys.push(config.holdKey(unit));
 
@@ -89,4 +95,32 @@ async function getSeatMap() {
   return seats;
 }
 
-module.exports = { holdSeat, releaseSeat, confirmSeat, getSeatMap };
+/**
+ * Snapshot of every seat: [{ unit, state: 'sold' | 'held' | 'free' }] (with non-enumerable .seq).
+ * Cached in-process for SEATMAP_CACHE_MS (~250ms) with a single in-flight promise so
+ * concurrent GET /seats requests and Socket.IO connects share one Redis pipeline round-trip.
+ */
+async function getSeatMap() {
+  const ttl = config.SEATMAP_CACHE_MS;
+  const now = Date.now();
+  if (ttl > 0 && cachedSeatMap && now - cachedSeatMapAt < ttl) {
+    return cachedSeatMap;
+  }
+  if (seatMapInflight) {
+    return seatMapInflight;
+  }
+  seatMapInflight = fetchSeatMapFromRedis()
+    .then((seats) => {
+      cachedSeatMap = seats;
+      cachedSeatMapAt = Date.now();
+      seatMapInflight = null;
+      return seats;
+    })
+    .catch((err) => {
+      seatMapInflight = null;
+      throw err;
+    });
+  return seatMapInflight;
+}
+
+module.exports = { holdSeat, releaseSeat, confirmSeat, getSeatMap, invalidateSeatMapCache };
