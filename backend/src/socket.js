@@ -53,14 +53,21 @@ function attachSocket(httpServer) {
       const unit = Number(message.slice(holdPrefix.length));
       if (Number.isInteger(unit) && unit >= 1 && unit <= config.TOTAL_UNITS) {
         // Emit directly on this instance; do NOT republish through config.channel.
-        io.emit('seat', { unit, state: 'free' });
+        redis.incr(config.seqKey())
+          .then((seq) => {
+            io.emit('seat', { unit, state: 'free', seq: Number(seq) });
+          })
+          .catch(() => {
+            io.emit('seat', { unit, state: 'free', seq: 0 });
+          });
       }
     }
   });
 
   io.on('connection', async (socket) => {
     try {
-      socket.emit('seatmap', { event: config.EVENT_ID, total: config.TOTAL_UNITS, seats: await getSeatMap() });
+      const seats = await getSeatMap();
+      socket.emit('seatmap', { event: config.EVENT_ID, total: config.TOTAL_UNITS, seats, seq: seats.seq || 0 });
     } catch (err) {
       socket.emit('seatmap_error', { error: 'SERVICE_UNAVAILABLE' });
     }

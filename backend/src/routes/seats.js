@@ -13,7 +13,7 @@ router.get('/seats', asyncHandler(async (req, res) => {
   const seats = await getSeatMap();
   const counts = { free: 0, held: 0, sold: 0 };
   for (const seat of seats) counts[seat.state] += 1;
-  res.json({ event: config.EVENT_ID, total: config.TOTAL_UNITS, seats, counts });
+  res.json({ event: config.EVENT_ID, total: config.TOTAL_UNITS, seats, counts, seq: seats.seq || 0 });
 }));
 
 module.exports = router;

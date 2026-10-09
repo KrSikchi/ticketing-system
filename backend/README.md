@@ -230,9 +230,11 @@ Clients must send a stable `bookingId` to make `/book` retry-safe.
 ### Live updates (Socket.IO)
 
 Connect a Socket.IO client to any instance. On connect it receives `seatmap`
-(`{event, total, seats}`), then a `seat` event (`{unit, state: "held" | "free" | "sold"}`) for every
-change made on **any** instance - the instances relay Redis Pub/Sub channel `seat-events`. This path
-is best-effort and can never fail a booking.
+(`{event, total, seats, seq}`), then a `seat` event (`{unit, state: "held" | "free" | "sold", seq}`) for every
+change made on **any** instance - the instances relay Redis Pub/Sub channel `seat-events` (and emit
+`free` directly on Redis hold-key expiry notifications). Each event carries a monotonically
+increasing `seq` (`INCR evt:{e1}:seq`) so clients can ignore events older than their snapshot `seq`.
+This path is best-effort and can never fail a booking.
 
 ---
 

@@ -76,6 +76,8 @@ const config = Object.freeze({
   soldKey: () => `evt:{${EVENT_ID}}:sold`,
   /** Readiness gate key set by rehydrate() after restoring sold seats from Postgres. */
   readyKey: () => `evt:{${EVENT_ID}}:ready`,
+  /** Monotonic sequence counter for live seat events. */
+  seqKey: () => `evt:{${EVENT_ID}}:seq`,
   /** Mock payment session hash for one bookingId (hash-tagged with {EVENT_ID} for cluster slot co-location). */
   payKey: (id) => `pay:{${EVENT_ID}}:${id}`,
   /** Per-user token bucket for the rate limiter. */

@@ -6,10 +6,12 @@
 const config = require('../config');
 const { redis } = require('../redis');
 
-/** Fire-and-forget Pub/Sub notification. A failure here must never fail a booking request. */
+/** Fire-and-forget Pub/Sub notification with monotonic sequence number. A failure here must never fail a booking request. */
 function publish(unit, state) {
   try {
-    redis.publish(config.channel, JSON.stringify({ unit, state })).catch(() => {});
+    redis.incr(config.seqKey())
+      .then((seq) => redis.publish(config.channel, JSON.stringify({ unit, state, seq: Number(seq) })))
+      .catch(() => {});
   } catch (_) {
     /* best effort only */
   }
@@ -57,18 +59,23 @@ async function confirmSeat(unit, userId, bookingId) {
 }
 
 /**
- * Snapshot of every seat: [{ unit, state: 'sold' | 'held' | 'free' }].
- * One pipeline round-trip: HGETALL sold + MGET of all hold keys.
+ * Snapshot of every seat: [{ unit, state: 'sold' | 'held' | 'free' }] (with non-enumerable .seq).
+ * One pipeline round-trip: HGETALL sold + MGET of all hold keys + GET seq.
  */
 async function getSeatMap() {
   const holdKeys = [];
   for (let unit = 1; unit <= config.TOTAL_UNITS; unit++) holdKeys.push(config.holdKey(unit));
 
-  const results = await redis.pipeline().hgetall(config.soldKey()).mget(holdKeys).exec();
+  const results = await redis.pipeline()
+    .hgetall(config.soldKey())
+    .mget(holdKeys)
+    .get(config.seqKey())
+    .exec();
   // pipeline.exec() resolves with [err, value] pairs - surface the first error (e.g. Redis down -> 503).
-  const [[soldErr, sold], [holdErr, holds]] = results;
+  const [[soldErr, sold], [holdErr, holds], [seqErr, rawSeq]] = results;
   if (soldErr) throw soldErr;
   if (holdErr) throw holdErr;
+  if (seqErr) throw seqErr;
 
   const seats = [];
   for (let unit = 1; unit <= config.TOTAL_UNITS; unit++) {
@@ -77,6 +84,8 @@ async function getSeatMap() {
     else if (holds[unit - 1]) state = 'held';
     seats.push({ unit, state });
   }
+  const seq = rawSeq ? Number(rawSeq) : 0;
+  Object.defineProperty(seats, 'seq', { value: seq, enumerable: false, configurable: true });
   return seats;
 }
 
