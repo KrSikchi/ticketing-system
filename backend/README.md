@@ -201,34 +201,40 @@ abandon a hold, kill an API - with the exact commands and the log lines you shou
 
 ## 6. API contract
 
-All bodies are JSON. Every `POST` requires the header `x-user-id: <string>` (the user identity for
-this hackathon - there is no login). Rate limit: a token bucket per user (20 burst, 10/s refill)
-evaluated inside Redis.
+All bodies are JSON. Authentication is controlled by `AUTH_MODE`:
+* `AUTH_MODE=header` (default, **for local dev and load tests only**): every `POST` requires the header `x-user-id: <string>`.
+* `AUTH_MODE=jwt` (production): every `POST` requires `Authorization: Bearer <token>` signed with HS256 using `JWT_SECRET` (validated with timing-safe signature compare and `exp` check; `req.userId = sub`). Startup fails if `AUTH_MODE=jwt` and `JWT_SECRET` is missing.
+
+Rate limits: a token bucket per IP (`IP_BUCKET_CAPACITY`, `IP_BUCKET_REFILL_PER_SEC`) and a token bucket per user (20 burst, 10/s refill) evaluated inside Redis. Per-user holds are capped at `MAX_HOLDS_PER_USER` (`429 {reason:"HOLD_LIMIT"}`) and total hold refreshes per seat are capped by `MAX_HOLD_TOTAL_MS`.
 
 | Method & path     | Body                     | Success                                                        | Other outcomes                                                                                              |
 |-------------------|--------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------|
-| `GET /health`     | -                        | `200 {redis:"ok", postgres:"ok", port}`                        | `503` with the same body when either dependency is down (booking still works without Postgres)              |
+| `GET /health`     | -                        | `200 {redis:"ok", postgres:"ok", ready:true, port}`            | `503` with the same body when either dependency is down or `ready:false` (`redis:"not_ready"` before rehydration finishes) |
 | `GET /seats`      | -                        | `200 {event, total, seats:[{unit, state}], counts:{free, held, sold}}` | `503` if Redis is down                                                                              |
-| `POST /hold`      | `{unit}`                 | `200 {ok:true, unit, expiresInMs}`                              | `409 {ok:false, reason:"HELD"}` someone else holds it · `409 {reason:"SOLD"}`                                |
+| `POST /hold`      | `{unit}`                 | `200 {ok:true, unit, expiresInMs}`                              | `409 {ok:false, reason:"HELD"}` someone else holds it · `409 {reason:"SOLD"}` · `429 {ok:false, reason:"HOLD_LIMIT"}` · `503 {ok:false, reason:"NOT_READY"}` (`Retry-After: 1`) |
 | `POST /release`   | `{unit}`                 | `200 {released:true}`                                           | `200 {released:false}` (not your hold / already gone)                                                        |
 | `POST /checkout`  | `{unit, bookingId}`      | `200 {ok:true, status:"PENDING", bookingId, unit}`              | `409 {reason:"NO_HOLD"}` you do not hold the seat · `409 {reason:"BOOKING_ID_CONFLICT"}` id used by another booking |
 | `POST /pay`       | `{bookingId}`            | `200 {ok:true, status:"BOOKED", bookingId, unit}`               | `402 PAYMENT_FAILED` (hold released) · `409 SOLD` (paid → refunded) · `410 EXPIRED` (hold expired → refunded) · `202 PAYMENT_IN_PROGRESS` (duplicate click while charging) · `404 NO_SESSION` · `403 FORBIDDEN` (not your session) |
-| `POST /book`      | `{unit, bookingId?}`     | `200 {ok:true, status:"BOOKED", bookingId, unit}`               | hold + checkout + pay + confirm in one call: `409 HELD` · `409 SOLD` · `402 PAYMENT_FAILED` · `410 EXPIRED` · `429` · `503` |
+| `POST /book`      | `{unit, bookingId?}`     | `200 {ok:true, status:"BOOKED", bookingId, unit}`               | hold + checkout + pay + confirm in one call: `409 HELD` · `409 SOLD` · `402 PAYMENT_FAILED` · `410 EXPIRED` · `429` (`RATE_LIMITED` / `HOLD_LIMIT`) · `503` (`NOT_READY` with `Retry-After: 1` or `SERVICE_UNAVAILABLE`) |
 
 Cross-cutting: `401 {error:"UNAUTHENTICATED"}` missing `x-user-id` · `400` invalid `unit`
 (must be an integer 1..`TOTAL_UNITS`), invalid `bookingId` (must be a UUID) or malformed JSON ·
 `429 {error:"RATE_LIMITED"}` · `503 {error:"SERVICE_UNAVAILABLE"}` whenever Redis is unreachable.
 
-`bookingId` is client-generated (UUID) so that `/checkout` and `/pay` are safely retryable:
-repeating `/checkout` returns the existing session, repeating `/pay` never charges twice and
-re-confirming an already confirmed booking returns `200 BOOKED` again.
+`bookingId` is client-generated (UUID) so that `/checkout`, `/pay` and `/book` are safely retryable:
+repeating `/checkout` returns the existing session, repeating `/pay` or `/book` (with the same
+stable `bookingId`) never charges twice and re-confirming an already confirmed booking returns
+`200 BOOKED` again (retrying `/book` with another user's `bookingId` returns `409 BOOKING_ID_CONFLICT`).
+Clients must send a stable `bookingId` to make `/book` retry-safe.
 
 ### Live updates (Socket.IO)
 
-Connect a Socket.IO client to any instance. On connect it receives `seatmap`
-(`{event, total, seats}`), then a `seat` event (`{unit, state: "held" | "free" | "sold"}`) for every
-change made on **any** instance - the instances relay Redis Pub/Sub channel `seat-events`. This path
-is best-effort and can never fail a booking.
+Connect a Socket.IO client to any instance using WebSocket transport only (`io(url, { transports: ['websocket'] })` — HTTP long-polling is disabled so stateless round-robin load balancers work without sticky sessions). On connect it receives `seatmap`
+(`{event, total, seats, seq}`), then a `seat` event (`{unit, state: "held" | "free" | "sold", seq}`) for every
+change made on **any** instance - the instances relay Redis Pub/Sub channel `seat-events` (and emit
+`free` directly on Redis hold-key expiry notifications). Each event carries a monotonically
+increasing `seq` (`INCR evt:{e1}:seq`) so clients can ignore events older than their snapshot `seq`.
+This path is best-effort and can never fail a booking.
 
 ---
 
@@ -240,7 +246,7 @@ is best-effort and can never fail a booking.
 | **A persist worker**                    | Nothing                                                                                     | Its unacked entries sit in the consumer group's pending list; the other worker reclaims them with `XAUTOCLAIM` after 5 s; start-all restarts it. |
 | **Postgres** (seconds or minutes)       | Nothing - booking only needs Redis. `/health` reports `postgres:"down"` (503)               | Workers log once and wait; the stream buffers every booking; when Postgres is back they drain it in seconds. `verify` converges.                 |
 | **Redis** (restart)                     | `503 SERVICE_UNAVAILABLE` within milliseconds until it is back (**fail closed**)            | ioredis reconnects (200 ms → 2 s backoff); every `ready` event triggers `rehydrate()`; the AOF (`appendfsync always`) means nothing was lost anyway. |
-| **Redis with data loss**                | As above                                                                                    | `rehydrate()` rebuilds the `sold` hash from Postgres before any request can be served, so no sold seat can be re-sold. Holds and pending payments are gone - users simply start again. |
+| **Redis with data loss**                | `503 {reason:"NOT_READY"}` (`Retry-After: 1`) until rehydration completes                   | `hold.lua` gates on `evt:{e1}:ready`, which `rehydrate()` sets only after restoring all Postgres-persisted sales into `sold` (retrying with exponential backoff on reconnect). Note: confirmed sales still in the Redis stream and not yet persisted to Postgres are lost on a full Redis wipe; use AOF (`appendfsync everysec` or `always`) + a replica + `WAIT` to protect in-flight stream entries. |
 | **API dies between "PAID" and confirm** | The user got no answer                                                                      | The reconciler sweeps `pay:*` every 30 s and marks `PAID` sessions older than 30 s whose seat is not sold to them as `REFUND`.                   |
 | **Hold abandoned**                      | Seat shows `held` until the TTL runs out                                                    | Redis expires the key; the seat is `free` again. No code involved.                                                                             |
 
@@ -270,15 +276,33 @@ TigerBeetle would make the refund/confirm pair atomic).
 | `EVENT_ID`              | `e1`                                             | the single event being sold (Redis hash-tag `{e1}`)                 |
 | `TOTAL_UNITS`           | `200`                                            | seats 1..N                                                          |
 | `HOLD_TTL_MS`           | `90000`                                          | hold lifetime - enforced by Redis key expiry only                   |
+| `MAX_HOLDS_PER_USER`    | `4`                                              | max concurrent holds per user (`429 HOLD_LIMIT`)                    |
+| `MAX_HOLD_TOTAL_MS`     | `180000`                                         | max total duration a seat can stay held across refreshes            |
 | `PAY_SESSION_TTL_MS`    | `90000`                                          | lifetime of PENDING / FAILED payment sessions                       |
 | `PAID_SESSION_TTL_MS`   | `3600000`                                        | how long PAID sessions stay visible to the reconciler               |
 | `PAYMENT_DELAY_MS`      | `100`                                            | mock gateway latency                                                |
 | `PAYMENT_FAIL_RATE`     | `0`                                              | 0..1 probability a mock payment fails                               |
+| `PAYMENT_TIMEOUT_MS`    | `15000`                                          | hold and session TTL extension while a payment is in flight         |
+| `AUTH_MODE`             | `header`                                         | `header` (dev/loadtest only) or `jwt` (HS256 Bearer token)          |
+| `JWT_SECRET`            | `""`                                             | HS256 secret (required when `AUTH_MODE=jwt`)                        |
+| `TRUST_PROXY`           | `false`                                          | Express `trust proxy` setting for `req.ip`                          |
 | `RATE_LIMIT_ENABLED`    | `true`                                           |                                                                     |
 | `BUCKET_CAPACITY`       | `20`                                             | per-user burst                                                      |
 | `BUCKET_REFILL_PER_SEC` | `10`                                             | per-user sustained rate                                             |
+| `IP_BUCKET_CAPACITY`    | `15000`                                          | per-IP burst                                                        |
+| `IP_BUCKET_REFILL_PER_SEC` | `5000`                                        | per-IP sustained rate                                               |
 | `WORKER_ID`             | `w1`                                             | consumer name in group `persisters`                                 |
 | `API_PORTS`             | `3001,3002,3003`                                 | (start-all only) which API instances to launch                      |
+
+### Migration notes
+
+* **Payment session keys (`pay:{EVENT_ID}:<bookingId>`) and bookings stream (`evt:{EVENT_ID}:bookings`):**
+  payment sessions (`pay:{e1}:<bookingId>`) and the confirmed-bookings stream (`evt:{e1}:bookings`)
+  now include the event hash-tag `{EVENT_ID}` so `hold.lua`, `confirm.lua`, `release.lua` and
+  `pay_begin.lua` each operate within a single Redis Cluster slot. `worker/persist.js` creates the
+  consumer group on `evt:{EVENT_ID}:bookings` with `MKSTREAM` and automatically drains any remaining
+  entries from the legacy `bookings` stream. Existing in-flight `pay:<id>` sessions use the old key
+  format; deploy during a quiet window with no pending payments (or read both key forms for one release).
 
 ### If 6379 or 5432 are already in use on your machine
 

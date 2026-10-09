@@ -6,28 +6,40 @@
 const config = require('../config');
 const { redis } = require('../redis');
 
-/** Fire-and-forget Pub/Sub notification. A failure here must never fail a booking request. */
+/** Fire-and-forget Pub/Sub notification with monotonic sequence number. A failure here must never fail a booking request. */
 function publish(unit, state) {
   try {
-    redis.publish(config.channel, JSON.stringify({ unit, state })).catch(() => {});
+    redis.incr(config.seqKey())
+      .then((seq) => redis.publish(config.channel, JSON.stringify({ unit, state, seq: Number(seq) })))
+      .catch(() => {});
   } catch (_) {
     /* best effort only */
   }
 }
 
 /**
- * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD'.
- * Re-holding your own seat refreshes the TTL (same user -> 'OK').
+ * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD' | 'NOT_READY' | 'LIMIT'.
+ * Re-holding your own seat refreshes the TTL (capped by MAX_HOLD_TOTAL_MS).
  */
 async function holdSeat(unit, userId) {
-  const status = await redis.hold(config.soldKey(), config.holdKey(unit), unit, userId, config.HOLD_TTL_MS);
+  const ttlMs = Number(process.env.HOLD_TTL_MS || config.HOLD_TTL_MS);
+  const maxHolds = Number(process.env.MAX_HOLDS_PER_USER || config.MAX_HOLDS_PER_USER);
+  const maxTotalMs = Number(process.env.MAX_HOLD_TOTAL_MS || config.MAX_HOLD_TOTAL_MS);
+  const status = await redis.hold(
+    config.soldKey(), config.holdKey(unit), config.readyKey(),
+    config.userHoldsKey(userId), config.holdMaxKey(unit),
+    unit, userId, ttlMs, maxHolds, maxTotalMs,
+  );
   if (status === 'OK') publish(unit, 'held');
   return status;
 }
 
 /** Release a hold if (and only if) this user owns it. Returns true when a hold was removed. */
 async function releaseSeat(unit, userId) {
-  const released = await redis.release(config.holdKey(unit), userId);
+  const released = await redis.release(
+    config.holdKey(unit), config.userHoldsKey(userId), config.holdMaxKey(unit),
+    userId, String(unit),
+  );
   if (released === 1) publish(unit, 'free');
   return released === 1;
 }
@@ -39,25 +51,37 @@ async function releaseSeat(unit, userId) {
 async function confirmSeat(unit, userId, bookingId) {
   const status = await redis.confirm(
     config.soldKey(), config.holdKey(unit), config.streamKey,
+    config.userHoldsKey(userId), config.holdMaxKey(unit),
     unit, userId, bookingId, config.EVENT_ID,
   );
   if (status === 'OK') publish(unit, 'sold');
   return status;
 }
 
-/**
- * Snapshot of every seat: [{ unit, state: 'sold' | 'held' | 'free' }].
- * One pipeline round-trip: HGETALL sold + MGET of all hold keys.
- */
-async function getSeatMap() {
+let cachedSeatMap = null;
+let cachedSeatMapAt = 0;
+let seatMapInflight = null;
+
+function invalidateSeatMapCache() {
+  cachedSeatMap = null;
+  cachedSeatMapAt = 0;
+  seatMapInflight = null;
+}
+
+async function fetchSeatMapFromRedis() {
   const holdKeys = [];
   for (let unit = 1; unit <= config.TOTAL_UNITS; unit++) holdKeys.push(config.holdKey(unit));
 
-  const results = await redis.pipeline().hgetall(config.soldKey()).mget(holdKeys).exec();
+  const results = await redis.pipeline()
+    .hgetall(config.soldKey())
+    .mget(holdKeys)
+    .get(config.seqKey())
+    .exec();
   // pipeline.exec() resolves with [err, value] pairs - surface the first error (e.g. Redis down -> 503).
-  const [[soldErr, sold], [holdErr, holds]] = results;
+  const [[soldErr, sold], [holdErr, holds], [seqErr, rawSeq]] = results;
   if (soldErr) throw soldErr;
   if (holdErr) throw holdErr;
+  if (seqErr) throw seqErr;
 
   const seats = [];
   for (let unit = 1; unit <= config.TOTAL_UNITS; unit++) {
@@ -66,7 +90,37 @@ async function getSeatMap() {
     else if (holds[unit - 1]) state = 'held';
     seats.push({ unit, state });
   }
+  const seq = rawSeq ? Number(rawSeq) : 0;
+  Object.defineProperty(seats, 'seq', { value: seq, enumerable: false, configurable: true });
   return seats;
 }
 
-module.exports = { holdSeat, releaseSeat, confirmSeat, getSeatMap };
+/**
+ * Snapshot of every seat: [{ unit, state: 'sold' | 'held' | 'free' }] (with non-enumerable .seq).
+ * Cached in-process for SEATMAP_CACHE_MS (~250ms) with a single in-flight promise so
+ * concurrent GET /seats requests and Socket.IO connects share one Redis pipeline round-trip.
+ */
+async function getSeatMap() {
+  const ttl = config.SEATMAP_CACHE_MS;
+  const now = Date.now();
+  if (ttl > 0 && cachedSeatMap && now - cachedSeatMapAt < ttl) {
+    return cachedSeatMap;
+  }
+  if (seatMapInflight) {
+    return seatMapInflight;
+  }
+  seatMapInflight = fetchSeatMapFromRedis()
+    .then((seats) => {
+      cachedSeatMap = seats;
+      cachedSeatMapAt = Date.now();
+      seatMapInflight = null;
+      return seats;
+    })
+    .catch((err) => {
+      seatMapInflight = null;
+      throw err;
+    });
+  return seatMapInflight;
+}
+
+module.exports = { holdSeat, releaseSeat, confirmSeat, getSeatMap, invalidateSeatMapCache };
