@@ -229,7 +229,7 @@ Clients must send a stable `bookingId` to make `/book` retry-safe.
 
 ### Live updates (Socket.IO)
 
-Connect a Socket.IO client to any instance. On connect it receives `seatmap`
+Connect a Socket.IO client to any instance using WebSocket transport only (`io(url, { transports: ['websocket'] })` — HTTP long-polling is disabled so stateless round-robin load balancers work without sticky sessions). On connect it receives `seatmap`
 (`{event, total, seats, seq}`), then a `seat` event (`{unit, state: "held" | "free" | "sold", seq}`) for every
 change made on **any** instance - the instances relay Redis Pub/Sub channel `seat-events` (and emit
 `free` directly on Redis hold-key expiry notifications). Each event carries a monotonically

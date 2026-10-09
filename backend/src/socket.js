@@ -25,6 +25,7 @@ function attachSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: { origin: '*' }, // hackathon: any origin may watch the seat map
     serveClient: false,
+    transports: ['websocket'],
   });
 
   // A subscribed connection cannot run normal commands -> it must be its own connection.
