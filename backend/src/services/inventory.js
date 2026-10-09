@@ -16,13 +16,17 @@ function publish(unit, state) {
 }
 
 /**
- * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD' | 'NOT_READY'.
- * Re-holding your own seat refreshes the TTL (same user -> 'OK').
+ * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD' | 'NOT_READY' | 'LIMIT'.
+ * Re-holding your own seat refreshes the TTL (capped by MAX_HOLD_TOTAL_MS).
  */
 async function holdSeat(unit, userId) {
+  const ttlMs = Number(process.env.HOLD_TTL_MS || config.HOLD_TTL_MS);
+  const maxHolds = Number(process.env.MAX_HOLDS_PER_USER || config.MAX_HOLDS_PER_USER);
+  const maxTotalMs = Number(process.env.MAX_HOLD_TOTAL_MS || config.MAX_HOLD_TOTAL_MS);
   const status = await redis.hold(
     config.soldKey(), config.holdKey(unit), config.readyKey(),
-    unit, userId, config.HOLD_TTL_MS,
+    config.userHoldsKey(userId), config.holdMaxKey(unit),
+    unit, userId, ttlMs, maxHolds, maxTotalMs,
   );
   if (status === 'OK') publish(unit, 'held');
   return status;
@@ -30,7 +34,10 @@ async function holdSeat(unit, userId) {
 
 /** Release a hold if (and only if) this user owns it. Returns true when a hold was removed. */
 async function releaseSeat(unit, userId) {
-  const released = await redis.release(config.holdKey(unit), userId);
+  const released = await redis.release(
+    config.holdKey(unit), config.userHoldsKey(userId), config.holdMaxKey(unit),
+    userId, String(unit),
+  );
   if (released === 1) publish(unit, 'free');
   return released === 1;
 }
@@ -42,6 +49,7 @@ async function releaseSeat(unit, userId) {
 async function confirmSeat(unit, userId, bookingId) {
   const status = await redis.confirm(
     config.soldKey(), config.holdKey(unit), config.streamKey,
+    config.userHoldsKey(userId), config.holdMaxKey(unit),
     unit, userId, bookingId, config.EVENT_ID,
   );
   if (status === 'OK') publish(unit, 'sold');

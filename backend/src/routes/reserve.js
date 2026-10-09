@@ -22,6 +22,9 @@ router.post('/hold', identify, rateLimit, validateUnit, asyncHandler(async (req,
   if (status === 'NOT_READY') {
     return res.set('Retry-After', '1').status(503).json({ ok: false, error: 'SERVICE_UNAVAILABLE', reason: 'NOT_READY' });
   }
+  if (status === 'LIMIT') {
+    return res.status(429).json({ ok: false, error: 'RATE_LIMITED', reason: 'HOLD_LIMIT' });
+  }
   return res.status(409).json({ ok: false, reason: status }); // 'HELD' or 'SOLD'
 }));
 

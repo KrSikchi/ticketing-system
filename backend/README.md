@@ -201,19 +201,21 @@ abandon a hold, kill an API - with the exact commands and the log lines you shou
 
 ## 6. API contract
 
-All bodies are JSON. Every `POST` requires the header `x-user-id: <string>` (the user identity for
-this hackathon - there is no login). Rate limit: a token bucket per user (20 burst, 10/s refill)
-evaluated inside Redis.
+All bodies are JSON. Authentication is controlled by `AUTH_MODE`:
+* `AUTH_MODE=header` (default, **for local dev and load tests only**): every `POST` requires the header `x-user-id: <string>`.
+* `AUTH_MODE=jwt` (production): every `POST` requires `Authorization: Bearer <token>` signed with HS256 using `JWT_SECRET` (validated with timing-safe signature compare and `exp` check; `req.userId = sub`). Startup fails if `AUTH_MODE=jwt` and `JWT_SECRET` is missing.
+
+Rate limits: a token bucket per IP (`IP_BUCKET_CAPACITY`, `IP_BUCKET_REFILL_PER_SEC`) and a token bucket per user (20 burst, 10/s refill) evaluated inside Redis. Per-user holds are capped at `MAX_HOLDS_PER_USER` (`429 {reason:"HOLD_LIMIT"}`) and total hold refreshes per seat are capped by `MAX_HOLD_TOTAL_MS`.
 
 | Method & path     | Body                     | Success                                                        | Other outcomes                                                                                              |
 |-------------------|--------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------|
 | `GET /health`     | -                        | `200 {redis:"ok", postgres:"ok", ready:true, port}`            | `503` with the same body when either dependency is down or `ready:false` (`redis:"not_ready"` before rehydration finishes) |
 | `GET /seats`      | -                        | `200 {event, total, seats:[{unit, state}], counts:{free, held, sold}}` | `503` if Redis is down                                                                              |
-| `POST /hold`      | `{unit}`                 | `200 {ok:true, unit, expiresInMs}`                              | `409 {ok:false, reason:"HELD"}` someone else holds it · `409 {reason:"SOLD"}` · `503 {ok:false, reason:"NOT_READY"}` (`Retry-After: 1`) |
+| `POST /hold`      | `{unit}`                 | `200 {ok:true, unit, expiresInMs}`                              | `409 {ok:false, reason:"HELD"}` someone else holds it · `409 {reason:"SOLD"}` · `429 {ok:false, reason:"HOLD_LIMIT"}` · `503 {ok:false, reason:"NOT_READY"}` (`Retry-After: 1`) |
 | `POST /release`   | `{unit}`                 | `200 {released:true}`                                           | `200 {released:false}` (not your hold / already gone)                                                        |
 | `POST /checkout`  | `{unit, bookingId}`      | `200 {ok:true, status:"PENDING", bookingId, unit}`              | `409 {reason:"NO_HOLD"}` you do not hold the seat · `409 {reason:"BOOKING_ID_CONFLICT"}` id used by another booking |
 | `POST /pay`       | `{bookingId}`            | `200 {ok:true, status:"BOOKED", bookingId, unit}`               | `402 PAYMENT_FAILED` (hold released) · `409 SOLD` (paid → refunded) · `410 EXPIRED` (hold expired → refunded) · `202 PAYMENT_IN_PROGRESS` (duplicate click while charging) · `404 NO_SESSION` · `403 FORBIDDEN` (not your session) |
-| `POST /book`      | `{unit, bookingId?}`     | `200 {ok:true, status:"BOOKED", bookingId, unit}`               | hold + checkout + pay + confirm in one call: `409 HELD` · `409 SOLD` · `402 PAYMENT_FAILED` · `410 EXPIRED` · `429` · `503` (`NOT_READY` with `Retry-After: 1` or `SERVICE_UNAVAILABLE`) |
+| `POST /book`      | `{unit, bookingId?}`     | `200 {ok:true, status:"BOOKED", bookingId, unit}`               | hold + checkout + pay + confirm in one call: `409 HELD` · `409 SOLD` · `402 PAYMENT_FAILED` · `410 EXPIRED` · `429` (`RATE_LIMITED` / `HOLD_LIMIT`) · `503` (`NOT_READY` with `Retry-After: 1` or `SERVICE_UNAVAILABLE`) |
 
 Cross-cutting: `401 {error:"UNAUTHENTICATED"}` missing `x-user-id` · `400` invalid `unit`
 (must be an integer 1..`TOTAL_UNITS`), invalid `bookingId` (must be a UUID) or malformed JSON ·
@@ -272,14 +274,21 @@ TigerBeetle would make the refund/confirm pair atomic).
 | `EVENT_ID`              | `e1`                                             | the single event being sold (Redis hash-tag `{e1}`)                 |
 | `TOTAL_UNITS`           | `200`                                            | seats 1..N                                                          |
 | `HOLD_TTL_MS`           | `90000`                                          | hold lifetime - enforced by Redis key expiry only                   |
+| `MAX_HOLDS_PER_USER`    | `4`                                              | max concurrent holds per user (`429 HOLD_LIMIT`)                    |
+| `MAX_HOLD_TOTAL_MS`     | `180000`                                         | max total duration a seat can stay held across refreshes            |
 | `PAY_SESSION_TTL_MS`    | `90000`                                          | lifetime of PENDING / FAILED payment sessions                       |
 | `PAID_SESSION_TTL_MS`   | `3600000`                                        | how long PAID sessions stay visible to the reconciler               |
 | `PAYMENT_DELAY_MS`      | `100`                                            | mock gateway latency                                                |
 | `PAYMENT_FAIL_RATE`     | `0`                                              | 0..1 probability a mock payment fails                               |
 | `PAYMENT_TIMEOUT_MS`    | `15000`                                          | hold and session TTL extension while a payment is in flight         |
+| `AUTH_MODE`             | `header`                                         | `header` (dev/loadtest only) or `jwt` (HS256 Bearer token)          |
+| `JWT_SECRET`            | `""`                                             | HS256 secret (required when `AUTH_MODE=jwt`)                        |
+| `TRUST_PROXY`           | `false`                                          | Express `trust proxy` setting for `req.ip`                          |
 | `RATE_LIMIT_ENABLED`    | `true`                                           |                                                                     |
 | `BUCKET_CAPACITY`       | `20`                                             | per-user burst                                                      |
 | `BUCKET_REFILL_PER_SEC` | `10`                                             | per-user sustained rate                                             |
+| `IP_BUCKET_CAPACITY`    | `15000`                                          | per-IP burst                                                        |
+| `IP_BUCKET_REFILL_PER_SEC` | `5000`                                        | per-IP sustained rate                                               |
 | `WORKER_ID`             | `w1`                                             | consumer name in group `persisters`                                 |
 | `API_PORTS`             | `3001,3002,3003`                                 | (start-all only) which API instances to launch                      |
 

@@ -36,6 +36,9 @@ router.post('/book', identify, rateLimit, validateUnit, validateBookingId({ opti
   if (held === 'NOT_READY') {
     return res.set('Retry-After', '1').status(503).json({ ok: false, error: 'SERVICE_UNAVAILABLE', reason: 'NOT_READY', unit });
   }
+  if (held === 'LIMIT') {
+    return res.status(429).json({ ok: false, error: 'RATE_LIMITED', reason: 'HOLD_LIMIT', unit });
+  }
   if (held !== 'OK') return res.status(409).json({ ok: false, reason: held, unit }); // 'SOLD' | 'HELD'
 
   // 2. Open the payment session against the hold we just took.
