@@ -16,11 +16,14 @@ function publish(unit, state) {
 }
 
 /**
- * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD'.
+ * Try to hold a seat for a user for HOLD_TTL_MS. Returns 'OK' | 'SOLD' | 'HELD' | 'NOT_READY'.
  * Re-holding your own seat refreshes the TTL (same user -> 'OK').
  */
 async function holdSeat(unit, userId) {
-  const status = await redis.hold(config.soldKey(), config.holdKey(unit), unit, userId, config.HOLD_TTL_MS);
+  const status = await redis.hold(
+    config.soldKey(), config.holdKey(unit), config.readyKey(),
+    unit, userId, config.HOLD_TTL_MS,
+  );
   if (status === 'OK') publish(unit, 'held');
   return status;
 }

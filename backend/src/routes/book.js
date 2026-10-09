@@ -33,6 +33,9 @@ router.post('/book', identify, rateLimit, validateUnit, validateBookingId({ opti
 
   // 1. Atomically take the seat (or learn that it is gone).
   const held = await holdSeat(unit, userId);
+  if (held === 'NOT_READY') {
+    return res.set('Retry-After', '1').status(503).json({ ok: false, error: 'SERVICE_UNAVAILABLE', reason: 'NOT_READY', unit });
+  }
   if (held !== 'OK') return res.status(409).json({ ok: false, reason: held, unit }); // 'SOLD' | 'HELD'
 
   // 2. Open the payment session against the hold we just took.

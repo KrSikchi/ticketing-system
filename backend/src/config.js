@@ -61,6 +61,8 @@ const config = Object.freeze({
   holdKey: (unit) => `evt:{${EVENT_ID}}:hold:${unit}`,
   /** Hash of sold seats: field = unit, value = bookingId. */
   soldKey: () => `evt:{${EVENT_ID}}:sold`,
+  /** Readiness gate key set by rehydrate() after restoring sold seats from Postgres. */
+  readyKey: () => `evt:{${EVENT_ID}}:ready`,
   /** Mock payment session hash for one bookingId. */
   payKey: (id) => `pay:${id}`,
   /** Per-user token bucket for the rate limiter. */

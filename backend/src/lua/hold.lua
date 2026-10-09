@@ -1,10 +1,12 @@
 -- hold.lua: atomically place (or refresh) a temporary hold on one seat.
--- Runs inside Redis, so the "is it sold? is it held by someone else? then take it" sequence
+-- Runs inside Redis, so the "is it ready? is it sold? is it held by someone else? then take it" sequence
 -- can never interleave with another client. Expiry is handled purely by the key TTL (Redis clock).
--- KEYS[1]=sold hash, KEYS[2]=hold key
+-- KEYS[1]=sold hash, KEYS[2]=hold key, KEYS[3]=ready key
 -- ARGV[1]=unit, ARGV[2]=userId, ARGV[3]=ttlMs
--- returns 'OK' | 'SOLD' | 'HELD'
+-- returns 'OK' | 'SOLD' | 'HELD' | 'NOT_READY'
 
+-- Refuse holds until rehydrate() has restored sold seats from Postgres after startup/reconnect.
+if redis.call('EXISTS', KEYS[3]) == 0 then return 'NOT_READY' end
 -- If the sold hash already has a field for this unit, the seat is permanently gone: refuse.
 if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then return 'SOLD' end
 -- Read who currently holds the seat (nil/false if nobody, or if the previous hold expired).

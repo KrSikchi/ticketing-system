@@ -12,7 +12,7 @@ const LUA_DIR = path.join(__dirname, 'lua');
 
 /** The four atomic scripts and how many KEYS each one takes (ioredis sends EVALSHA, falls back to EVAL). */
 const SCRIPTS = {
-  hold: { numberOfKeys: 2, lua: fs.readFileSync(path.join(LUA_DIR, 'hold.lua'), 'utf8') },
+  hold: { numberOfKeys: 3, lua: fs.readFileSync(path.join(LUA_DIR, 'hold.lua'), 'utf8') },
   confirm: { numberOfKeys: 3, lua: fs.readFileSync(path.join(LUA_DIR, 'confirm.lua'), 'utf8') },
   release: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'release.lua'), 'utf8') },
   bucket: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'bucket.lua'), 'utf8') },

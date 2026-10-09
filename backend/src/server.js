@@ -39,12 +39,12 @@ async function main() {
   console.log(`${TAG} listening on http://0.0.0.0:${config.PORT}`);
 
   // 6. After every reconnect (e.g. `docker restart tickets-redis`) rebuild the sold hash again.
+  let shuttingDown = false;
   redis.on('ready', () => {
-    rehydrate().catch((err) => console.error(`${TAG} rehydrate after reconnect failed: ${err.message}`));
+    rehydrate.rehydrateWithRetry({ shouldStop: () => shuttingDown, tag: TAG });
   });
 
   // 7. Graceful shutdown: stop accepting, drain, close dependencies, exit.
-  let shuttingDown = false;
   async function shutdown(signal) {
     if (shuttingDown) return;
     shuttingDown = true;

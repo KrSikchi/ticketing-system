@@ -25,12 +25,18 @@ async function probe(promiseFactory, ms = 1500) {
 }
 
 router.get('/health', async (req, res) => {
-  const [redisState, pgState] = await Promise.all([
+  const [redisPing, readyFlag, pgState] = await Promise.all([
     probe(() => redis.ping()),
+    probe(async () => {
+      const exists = await redis.exists(config.readyKey());
+      if (exists !== 1) throw new Error('not_ready');
+    }),
     probe(() => pool.query('SELECT 1')),
   ]);
+  const ready = redisPing === 'ok' && readyFlag === 'ok';
+  const redisState = redisPing !== 'ok' ? 'down' : (ready ? 'ok' : 'not_ready');
   const healthy = redisState === 'ok' && pgState === 'ok';
-  res.status(healthy ? 200 : 503).json({ redis: redisState, postgres: pgState, port: config.PORT });
+  res.status(healthy ? 200 : 503).json({ redis: redisState, postgres: pgState, ready, port: config.PORT });
 });
 
 module.exports = router;
