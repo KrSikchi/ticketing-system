@@ -276,11 +276,20 @@ TigerBeetle would make the refund/confirm pair atomic).
 | `PAID_SESSION_TTL_MS`   | `3600000`                                        | how long PAID sessions stay visible to the reconciler               |
 | `PAYMENT_DELAY_MS`      | `100`                                            | mock gateway latency                                                |
 | `PAYMENT_FAIL_RATE`     | `0`                                              | 0..1 probability a mock payment fails                               |
+| `PAYMENT_TIMEOUT_MS`    | `15000`                                          | hold and session TTL extension while a payment is in flight         |
 | `RATE_LIMIT_ENABLED`    | `true`                                           |                                                                     |
 | `BUCKET_CAPACITY`       | `20`                                             | per-user burst                                                      |
 | `BUCKET_REFILL_PER_SEC` | `10`                                             | per-user sustained rate                                             |
 | `WORKER_ID`             | `w1`                                             | consumer name in group `persisters`                                 |
 | `API_PORTS`             | `3001,3002,3003`                                 | (start-all only) which API instances to launch                      |
+
+### Migration notes
+
+* **Payment session keys (`pay:{EVENT_ID}:<bookingId>`):** payment sessions now include the event
+  hash-tag `{EVENT_ID}` (`pay:{e1}:<bookingId>` instead of `pay:<bookingId>`) so `pay_begin.lua` can
+  atomically check `sold`, `hold` and `session` in a single Redis Cluster slot. Existing in-flight
+  `pay:<id>` sessions use the old key format; deploy during a quiet window with no pending payments
+  (or read both key forms for one release).
 
 ### If 6379 or 5432 are already in use on your machine
 

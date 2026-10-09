@@ -16,6 +16,8 @@ const SCRIPTS = {
   confirm: { numberOfKeys: 3, lua: fs.readFileSync(path.join(LUA_DIR, 'confirm.lua'), 'utf8') },
   release: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'release.lua'), 'utf8') },
   bucket: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'bucket.lua'), 'utf8') },
+  pay_begin: { numberOfKeys: 3, lua: fs.readFileSync(path.join(LUA_DIR, 'pay_begin.lua'), 'utf8') },
+  pay_finish: { numberOfKeys: 1, lua: fs.readFileSync(path.join(LUA_DIR, 'pay_finish.lua'), 'utf8') },
 };
 
 /**

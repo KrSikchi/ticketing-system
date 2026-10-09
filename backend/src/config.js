@@ -47,6 +47,7 @@ const config = Object.freeze({
 
   PAYMENT_DELAY_MS: num('PAYMENT_DELAY_MS', 100),
   PAYMENT_FAIL_RATE: num('PAYMENT_FAIL_RATE', 0),
+  PAYMENT_TIMEOUT_MS: num('PAYMENT_TIMEOUT_MS', 15000),
 
   RATE_LIMIT_ENABLED: bool('RATE_LIMIT_ENABLED', true),
   BUCKET_CAPACITY: num('BUCKET_CAPACITY', 20),
@@ -63,8 +64,8 @@ const config = Object.freeze({
   soldKey: () => `evt:{${EVENT_ID}}:sold`,
   /** Readiness gate key set by rehydrate() after restoring sold seats from Postgres. */
   readyKey: () => `evt:{${EVENT_ID}}:ready`,
-  /** Mock payment session hash for one bookingId. */
-  payKey: (id) => `pay:${id}`,
+  /** Mock payment session hash for one bookingId (hash-tagged with {EVENT_ID} for cluster slot co-location). */
+  payKey: (id) => `pay:{${EVENT_ID}}:${id}`,
   /** Per-user token bucket for the rate limiter. */
   rlKey: (userId) => `rl:${userId}`,
   /** Redis Stream that carries confirmed bookings to the persist workers. */
@@ -82,7 +83,7 @@ if (!Number.isInteger(config.TOTAL_UNITS) || config.TOTAL_UNITS < 1) {
 if (config.PAYMENT_FAIL_RATE < 0 || config.PAYMENT_FAIL_RATE > 1) {
   throw new Error('Config error: PAYMENT_FAIL_RATE must be between 0 and 1');
 }
-if (config.HOLD_TTL_MS < 1 || config.PAY_SESSION_TTL_MS < 1 || config.PAID_SESSION_TTL_MS < 1) {
+if (config.HOLD_TTL_MS < 1 || config.PAY_SESSION_TTL_MS < 1 || config.PAID_SESSION_TTL_MS < 1 || config.PAYMENT_TIMEOUT_MS < 1) {
   throw new Error('Config error: TTL values must be positive milliseconds');
 }
 

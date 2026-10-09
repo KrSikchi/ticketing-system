@@ -35,6 +35,11 @@ async function sweep() {
       scanned += 1;
       if (session.status !== 'PAID') continue;
 
+      if (!session.user || !session.unit) {
+        console.error(`${TAG} ALERT: PAID session ${keys[i]} lacks user or unit (${JSON.stringify(session)}); skipping refund`);
+        continue;
+      }
+
       // pay() sets PEXPIRE PAID_SESSION_TTL_MS at the moment of payment, so the elapsed time
       // since payment (by Redis's clock) is PAID_SESSION_TTL_MS - PTTL.
       const ageMs = config.PAID_SESSION_TTL_MS - pttl;
@@ -44,9 +49,11 @@ async function sweep() {
       const soldTo = await redis.hget(config.soldKey(), String(session.unit));
       if (soldTo === bookingId) continue; // all good: paid AND owns the seat
 
-      await redis.hset(keys[i], 'status', 'REFUND', 'refundedAt', String(Date.now()));
-      refunded += 1;
-      console.log(`refunded ${bookingId} (user ${session.user}, unit ${session.unit} is ${soldTo ? `sold to ${soldTo}` : 'not sold'})`);
+      const updated = await redis.pay_finish(keys[i], 'REFUND', String(config.PAID_SESSION_TTL_MS), '');
+      if (Number(updated) === 1) {
+        refunded += 1;
+        console.log(`refunded ${bookingId} (user ${session.user}, unit ${session.unit} is ${soldTo ? `sold to ${soldTo}` : 'not sold'})`);
+      }
     }
   } while (cursor !== '0');
 
@@ -87,7 +94,11 @@ process.on('unhandledRejection', (reason) => {
   console.error(`${TAG} unhandled rejection:`, reason && reason.stack ? reason.stack : reason);
 });
 
-main().catch((err) => {
-  console.error(`${TAG} fatal: ${err.stack || err.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`${TAG} fatal: ${err.stack || err.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { sweep, tick };
