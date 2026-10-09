@@ -1,0 +1,25 @@
+# Local infrastructure for the reservation engine: Redis 7 with the append-only file fsynced on every
+# write (a confirmed seat survives a Redis crash) and PostgreSQL 16, which runs db/schema.sql on its
+# first start. Only these two run in Docker - the Node processes run on the host (npm run start:all).
+services:
+  redis:
+    image: redis:7
+    container_name: tickets-redis
+    command: redis-server --appendonly yes --appendfsync always
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    restart: unless-stopped
+  postgres:
+    image: postgres:16
+    container_name: tickets-pg
+    environment:
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: tickets
+    ports: ["5432:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    restart: unless-stopped
+volumes:
+  redis-data:
+  pg-data:

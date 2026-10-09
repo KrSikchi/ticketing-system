@@ -1,0 +1,4 @@
+# Dependencies and local secrets never go into Git.
+node_modules/
+.env
+*.log
