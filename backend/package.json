@@ -1,0 +1,32 @@
+{
+  "name": "flash-reservation-engine",
+  "version": "1.0.0",
+  "description": "High-contention flash-reservation & seat inventory locking engine (Redis Lua + Streams, async Postgres persistence)",
+  "private": true,
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "start:api": "node src/server.js",
+    "start:worker": "node worker/persist.js",
+    "start:reconciler": "node worker/reconciler.js",
+    "start:all": "node scripts/start-all.js",
+    "reset": "node scripts/reset.js",
+    "loadtest": "node loadtest/race.js",
+    "verify": "node loadtest/verify.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "undici": "^6.21.0"
+  },
+  "license": "MIT"
+}
