@@ -219,9 +219,11 @@ Cross-cutting: `401 {error:"UNAUTHENTICATED"}` missing `x-user-id` · `400` inva
 (must be an integer 1..`TOTAL_UNITS`), invalid `bookingId` (must be a UUID) or malformed JSON ·
 `429 {error:"RATE_LIMITED"}` · `503 {error:"SERVICE_UNAVAILABLE"}` whenever Redis is unreachable.
 
-`bookingId` is client-generated (UUID) so that `/checkout` and `/pay` are safely retryable:
-repeating `/checkout` returns the existing session, repeating `/pay` never charges twice and
-re-confirming an already confirmed booking returns `200 BOOKED` again.
+`bookingId` is client-generated (UUID) so that `/checkout`, `/pay` and `/book` are safely retryable:
+repeating `/checkout` returns the existing session, repeating `/pay` or `/book` (with the same
+stable `bookingId`) never charges twice and re-confirming an already confirmed booking returns
+`200 BOOKED` again (retrying `/book` with another user's `bookingId` returns `409 BOOKING_ID_CONFLICT`).
+Clients must send a stable `bookingId` to make `/book` retry-safe.
 
 ### Live updates (Socket.IO)
 
