@@ -6,8 +6,20 @@
 
 const { Server } = require('socket.io');
 const config = require('./config');
-const { createRedis } = require('./redis');
+const { redis, createRedis } = require('./redis');
 const { getSeatMap } = require('./services/inventory');
+
+/** Extract the Redis database index from a redis:// URL (defaults to 0). */
+function getRedisDbIndex(redisUrl) {
+  try {
+    const u = new URL(redisUrl);
+    const pathPart = (u.pathname || '').replace(/^\/+/, '');
+    if (pathPart && /^\d+$/.test(pathPart)) return Number(pathPart);
+  } catch (_) {
+    /* ignore */
+  }
+  return 0;
+}
 
 function attachSocket(httpServer) {
   const io = new Server(httpServer, {
@@ -17,20 +29,32 @@ function attachSocket(httpServer) {
 
   // A subscribed connection cannot run normal commands -> it must be its own connection.
   const subscriber = createRedis('subscriber');
+  const expiredChannel = `__keyevent@${getRedisDbIndex(config.REDIS_URL)}__:expired`;
+  const holdPrefix = config.holdKey('');
 
   // (Re)subscribe on every 'ready' so a Redis restart never leaves us silently unsubscribed.
   subscriber.on('ready', () => {
-    subscriber.subscribe(config.channel).catch((err) => {
+    redis.config('SET', 'notify-keyspace-events', 'Ex').catch(() => {});
+    subscriber.subscribe(config.channel, expiredChannel).catch((err) => {
       console.warn(`[socket] subscribe failed: ${err.message}`);
     });
   });
 
   subscriber.on('message', (channel, message) => {
-    if (channel !== config.channel) return;
-    try {
-      io.emit('seat', JSON.parse(message)); // {unit, state: 'held' | 'free' | 'sold'}
-    } catch (_) {
-      /* malformed message: ignore */
+    if (channel === config.channel) {
+      try {
+        io.emit('seat', JSON.parse(message)); // {unit, state: 'held' | 'free' | 'sold'}
+      } catch (_) {
+        /* malformed message: ignore */
+      }
+      return;
+    }
+    if (channel === expiredChannel && typeof message === 'string' && message.startsWith(holdPrefix)) {
+      const unit = Number(message.slice(holdPrefix.length));
+      if (Number.isInteger(unit) && unit >= 1 && unit <= config.TOTAL_UNITS) {
+        // Emit directly on this instance; do NOT republish through config.channel.
+        io.emit('seat', { unit, state: 'free' });
+      }
     }
   });
 
@@ -51,4 +75,4 @@ function attachSocket(httpServer) {
   return { io, close };
 }
 
-module.exports = { attachSocket };
+module.exports = { attachSocket, getRedisDbIndex };
