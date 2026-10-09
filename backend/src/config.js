@@ -50,6 +50,7 @@ const config = Object.freeze({
   PAYMENT_DELAY_MS: num('PAYMENT_DELAY_MS', 100),
   PAYMENT_FAIL_RATE: num('PAYMENT_FAIL_RATE', 0),
   PAYMENT_TIMEOUT_MS: num('PAYMENT_TIMEOUT_MS', 15000),
+  STUCK_LOCK_MS: num('STUCK_LOCK_MS', 15000),
 
   AUTH_MODE: str('AUTH_MODE', 'header'),
   JWT_SECRET: str('JWT_SECRET', ''),
@@ -103,7 +104,7 @@ if (!Number.isInteger(config.TOTAL_UNITS) || config.TOTAL_UNITS < 1) {
 if (config.PAYMENT_FAIL_RATE < 0 || config.PAYMENT_FAIL_RATE > 1) {
   throw new Error('Config error: PAYMENT_FAIL_RATE must be between 0 and 1');
 }
-if (config.HOLD_TTL_MS < 1 || config.MAX_HOLD_TOTAL_MS < 1 || config.PAY_SESSION_TTL_MS < 1 || config.PAID_SESSION_TTL_MS < 1 || config.PAYMENT_TIMEOUT_MS < 1) {
+if (config.HOLD_TTL_MS < 1 || config.MAX_HOLD_TOTAL_MS < 1 || config.PAY_SESSION_TTL_MS < 1 || config.PAID_SESSION_TTL_MS < 1 || config.PAYMENT_TIMEOUT_MS < 1 || config.STUCK_LOCK_MS < 1) {
   throw new Error('Config error: TTL values must be positive milliseconds');
 }
 if (!Number.isInteger(config.MAX_HOLDS_PER_USER) || config.MAX_HOLDS_PER_USER < 1) {

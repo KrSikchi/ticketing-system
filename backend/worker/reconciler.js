@@ -12,11 +12,16 @@ const SWEEP_EVERY_MS = 30000;
 const MIN_PAID_AGE_MS = 30000; // grace period so an in-flight confirm is never raced
 const SCAN_COUNT = 200;
 
-/** One pass over all pay:* keys. Returns { scanned, refunded }. */
+/** One pass over all pay:* keys. Returns { scanned, refunded, stuck }. */
 async function sweep() {
   let cursor = '0';
   let scanned = 0;
   let refunded = 0;
+  let stuck = 0;
+
+  const [sec, usec] = await redis.time();
+  const nowMs = Number(sec) * 1000 + Math.floor(Number(usec) / 1000);
+  const stuckLockMs = Number(process.env.STUCK_LOCK_MS || config.STUCK_LOCK_MS);
 
   do {
     const [next, keys] = await redis.scan(cursor, 'MATCH', config.payKey('*'), 'COUNT', SCAN_COUNT);
@@ -33,6 +38,28 @@ async function sweep() {
       const [ttlErr, pttl] = results[i * 2 + 1];
       if (sessionErr || ttlErr || !session || !session.status) continue;
       scanned += 1;
+
+      const bookingId = keys[i].slice(config.payKey('').length);
+
+      if (session.status === 'PENDING' && session.lock) {
+        const lockAgeMs = session.lockedAt
+          ? nowMs - Number(session.lockedAt)
+          : config.PAYMENT_TIMEOUT_MS - pttl;
+        if (pttl > 0 && lockAgeMs >= stuckLockMs) {
+          stuck += 1;
+          if (await redis.exists(keys[i])) {
+            await redis.multi()
+              .hset(keys[i], 'flagged', 'STUCK_PENDING')
+              .pexpire(keys[i], Math.max(pttl, 1000))
+              .exec();
+          }
+          console.error(
+            `${TAG} ALERT: stuck PENDING session ${keys[i]} with lock held for ${lockAgeMs}ms without final status (bookingId=${bookingId}, user=${session.user}, unit=${session.unit})`
+          );
+        }
+        continue;
+      }
+
       if (session.status !== 'PAID') continue;
 
       if (!session.user || !session.unit) {
@@ -45,7 +72,6 @@ async function sweep() {
       const ageMs = config.PAID_SESSION_TTL_MS - pttl;
       if (pttl < 0 || ageMs < MIN_PAID_AGE_MS) continue;
 
-      const bookingId = keys[i].slice(config.payKey('').length);
       const soldTo = await redis.hget(config.soldKey(), String(session.unit));
       if (soldTo === bookingId) continue; // all good: paid AND owns the seat
 
@@ -57,7 +83,7 @@ async function sweep() {
     }
   } while (cursor !== '0');
 
-  return { scanned, refunded };
+  return { scanned, refunded, stuck };
 }
 
 let running = false;
