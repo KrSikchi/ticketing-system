@@ -84,15 +84,62 @@ async function writeToPostgres(id, note) {
     const reason = err.code === '23505'
       ? `unique violation on ${err.constraint || 'bookings'}: seat already sold to another booking`
       : `${err.code}: ${err.message}`;
-    console.error(`${TAG} !!! DEAD LETTER ${id} (${reason}) payload=${JSON.stringify(note)}`);
+
+    let dlId = null;
     try {
-      await pool.query(
-        'INSERT INTO dead_letters (payload, reason) VALUES ($1, $2)',
+      const ins = await pool.query(
+        "INSERT INTO dead_letters (payload, reason, status) VALUES ($1, $2, 'PENDING') RETURNING id",
         [JSON.stringify({ streamId: id, ...note }), reason],
       );
+      dlId = ins.rows[0] && ins.rows[0].id;
     } catch (dlErr) {
       throw new PostgresUnavailable(dlErr); // could not record it now -> entry stays pending
     }
+
+    let winnerBookingId = null;
+    try {
+      if (note.event && note.unit !== undefined) {
+        const winRes = await pool.query(
+          'SELECT booking_id FROM bookings WHERE event_id = $1 AND unit_id = $2',
+          [note.event, Number(note.unit)],
+        );
+        if (winRes.rows.length > 0) {
+          winnerBookingId = winRes.rows[0].booking_id;
+          await redis.hset(config.soldKey(), String(note.unit), String(winnerBookingId));
+        }
+      }
+      if (note.bookingId) {
+        await redis.pay_finish(
+          config.payKey(note.bookingId),
+          'REFUND',
+          String(config.PAID_SESSION_TTL_MS),
+          '',
+        );
+      }
+      if (dlId !== null) {
+        await pool.query(
+          "UPDATE dead_letters SET status = 'RESOLVED', resolved_at = now() WHERE id = $1",
+          [dlId],
+        );
+      }
+    } catch (reconcileErr) {
+      console.error(`${TAG} failed to reconcile dead-letter ${id}: ${reconcileErr.message}`);
+    }
+
+    console.error(
+      `${TAG} !!! DEAD LETTER ${id} ` +
+      JSON.stringify({
+        alert: 'DEAD_LETTER_RECONCILED',
+        streamId: id,
+        deadLetterId: dlId,
+        reason,
+        event: note.event,
+        unit: Number(note.unit),
+        loserBookingId: note.bookingId,
+        loserUser: note.user,
+        winnerBookingId,
+      }),
+    );
     return 'dead-lettered';
   }
 }
