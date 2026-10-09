@@ -8,6 +8,7 @@ const path = require('path');
 const config = require('../src/config');
 const { redis, waitUntilReady } = require('../src/redis');
 const { pool, waitForPostgres } = require('../src/pg');
+const rehydrate = require('../src/rehydrate');
 
 /** Delete every key matching `pattern` using SCAN (safe on a busy Redis). Returns the count. */
 async function scanDelete(pattern) {
@@ -38,12 +39,14 @@ async function main() {
   const payDeleted = await scanDelete(config.payKey('*'));
   const rlDeleted = await scanDelete(config.rlKey('*'));
   const streamDeleted = await redis.del(config.streamKey);
+  if (config.legacyStreamKey) await redis.del(config.legacyStreamKey);
   try {
     await redis.xgroup('CREATE', config.streamKey, config.group, '0', 'MKSTREAM');
   } catch (err) {
     // A running persist worker may have recreated the group a millisecond before us - that is fine.
     if (!String(err.message).includes('BUSYGROUP')) throw err;
   }
+  await rehydrate();
 
   // Set readiness sentinel so immediate requests succeed
   await redis.set(config.readyKey(), '1');

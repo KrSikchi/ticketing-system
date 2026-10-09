@@ -16,7 +16,8 @@
     "start:all": "node scripts/start-all.js",
     "reset": "node scripts/reset.js",
     "loadtest": "node loadtest/race.js",
-    "verify": "node loadtest/verify.js"
+    "verify": "node loadtest/verify.js",
+    "test": "node --test test/"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -4,6 +4,7 @@
 'use strict';
 
 const express = require('express');
+const config = require('./config');
 const healthRoutes = require('./routes/health');
 const seatsRoutes = require('./routes/seats');
 const reserveRoutes = require('./routes/reserve');
@@ -15,6 +16,7 @@ const app = express();
 
 app.disable('x-powered-by');
 app.set('etag', false); // tiny saving per response; nothing here is cacheable anyway
+app.set('trust proxy', config.TRUST_PROXY);
 app.use(express.json({ limit: '16kb' }));
 
 app.use(healthRoutes);

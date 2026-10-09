@@ -42,15 +42,27 @@ const config = Object.freeze({
   TOTAL_UNITS: num('TOTAL_UNITS', 200),
 
   HOLD_TTL_MS: num('HOLD_TTL_MS', 90000),
+  MAX_HOLDS_PER_USER: num('MAX_HOLDS_PER_USER', 4),
+  MAX_HOLD_TOTAL_MS: num('MAX_HOLD_TOTAL_MS', 180000),
   PAY_SESSION_TTL_MS: num('PAY_SESSION_TTL_MS', 90000),
   PAID_SESSION_TTL_MS: num('PAID_SESSION_TTL_MS', 3600000),
 
   PAYMENT_DELAY_MS: num('PAYMENT_DELAY_MS', 100),
   PAYMENT_FAIL_RATE: num('PAYMENT_FAIL_RATE', 0),
+  PAYMENT_TIMEOUT_MS: num('PAYMENT_TIMEOUT_MS', 15000),
+  STUCK_LOCK_MS: num('STUCK_LOCK_MS', 15000),
+
+  AUTH_MODE: str('AUTH_MODE', 'header'),
+  JWT_SECRET: str('JWT_SECRET', ''),
+  TRUST_PROXY: bool('TRUST_PROXY', false),
 
   RATE_LIMIT_ENABLED: bool('RATE_LIMIT_ENABLED', true),
   BUCKET_CAPACITY: num('BUCKET_CAPACITY', 20),
   BUCKET_REFILL_PER_SEC: num('BUCKET_REFILL_PER_SEC', 10),
+  IP_BUCKET_CAPACITY: num('IP_BUCKET_CAPACITY', 15000),
+  IP_BUCKET_REFILL_PER_SEC: num('IP_BUCKET_REFILL_PER_SEC', 5000),
+
+  SEATMAP_CACHE_MS: num('SEATMAP_CACHE_MS', 250),
 
   WORKER_ID: str('WORKER_ID', 'w1'),
 
@@ -61,14 +73,24 @@ const config = Object.freeze({
   readyKey: () => `evt:{${EVENT_ID}}:ready`,
   /** Per-seat hold key. Value = userId or userId|bookingId holding the seat, TTL = HOLD_TTL_MS. */
   holdKey: (unit) => `evt:{${EVENT_ID}}:hold:${unit}`,
+  /** Per-seat max total hold duration key (NX, PX = MAX_HOLD_TOTAL_MS). */
+  holdMaxKey: (unit) => `evt:{${EVENT_ID}}:holdmax:${unit}`,
+  /** Per-user ZSET of held units scored by hold expiry timestamp (ms). */
+  userHoldsKey: (userId) => `evt:{${EVENT_ID}}:uholds:${userId}`,
   /** Hash of sold seats: field = unit, value = bookingId. */
   soldKey: () => `evt:{${EVENT_ID}}:sold`,
-  /** Mock payment session hash for one bookingId. */
-  payKey: (id) => `pay:${id}`,
+  /** Monotonic sequence counter for live seat events. */
+  seqKey: () => `evt:{${EVENT_ID}}:seq`,
+  /** Mock payment session hash for one bookingId (hash-tagged with {EVENT_ID} for cluster slot co-location). */
+  payKey: (id) => `pay:{${EVENT_ID}}:${id}`,
   /** Per-user token bucket for the rate limiter. */
   rlKey: (userId) => `rl:${userId}`,
-  /** Redis Stream that carries confirmed bookings to the persist workers (shares event hash tag). */
+  /** Per-IP token bucket for the rate limiter. */
+  ipRlKey: (ip) => `rl:ip:${ip}`,
+  /** Redis Stream that carries confirmed bookings to the persist workers (hash-tagged with {EVENT_ID}). */
   streamKey: `evt:{${EVENT_ID}}:bookings`,
+  /** Legacy stream key drained during migration. */
+  legacyStreamKey: 'bookings',
   /** Consumer group name on the stream. */
   group: 'persisters',
   /** Pub/Sub channel for live seat-state events (consumed by socket.js). */
@@ -82,8 +104,17 @@ if (!Number.isInteger(config.TOTAL_UNITS) || config.TOTAL_UNITS < 1) {
 if (config.PAYMENT_FAIL_RATE < 0 || config.PAYMENT_FAIL_RATE > 1) {
   throw new Error('Config error: PAYMENT_FAIL_RATE must be between 0 and 1');
 }
-if (config.HOLD_TTL_MS < 1 || config.PAY_SESSION_TTL_MS < 1 || config.PAID_SESSION_TTL_MS < 1) {
+if (config.HOLD_TTL_MS < 1 || config.MAX_HOLD_TOTAL_MS < 1 || config.PAY_SESSION_TTL_MS < 1 || config.PAID_SESSION_TTL_MS < 1 || config.PAYMENT_TIMEOUT_MS < 1 || config.STUCK_LOCK_MS < 1) {
   throw new Error('Config error: TTL values must be positive milliseconds');
+}
+if (!Number.isInteger(config.MAX_HOLDS_PER_USER) || config.MAX_HOLDS_PER_USER < 1) {
+  throw new Error('Config error: MAX_HOLDS_PER_USER must be a positive integer');
+}
+if (!['header', 'jwt'].includes(config.AUTH_MODE)) {
+  throw new Error('Config error: AUTH_MODE must be "header" or "jwt"');
+}
+if (config.AUTH_MODE === 'jwt' && !config.JWT_SECRET) {
+  throw new Error('Config error: JWT_SECRET is required when AUTH_MODE=jwt');
 }
 
 module.exports = config;
