@@ -50,22 +50,22 @@ async function createSession(userId, unit, bookingId) {
 }
 
 /**
- * Charge the mock gateway for a session. Returns { status, user, unit }:
- *   status 'PAID' | 'FAILED'  - decided by this call
- *   status 'PENDING' | 'PAID' | 'FAILED' | 'REFUND' - stored result when another call already charged
+ * Charge the mock gateway for a session. Returns { status, user, unit, decided }:
+ *   status 'PAID' | 'FAILED'  - decided by this call (decided: true)
+ *   status 'PENDING' | 'PAID' | 'FAILED' | 'REFUND' - stored result when another call already charged (decided: false)
  *   status 'NO_SESSION'       - unknown / expired bookingId
  */
 async function pay(bookingId) {
   const key = config.payKey(bookingId);
   const session = await getSession(bookingId);
-  if (!session) return { status: 'NO_SESSION' };
+  if (!session) return { status: 'NO_SESSION', decided: false };
 
   // Exactly one caller wins the lock; every duplicate click gets the stored status instead of a 2nd charge.
   const lock = await redis.hsetnx(key, 'lock', '1');
   if (lock === 0) {
     const current = await getSession(bookingId);
-    if (!current) return { status: 'NO_SESSION' };
-    return { status: current.status, user: current.user, unit: current.unit };
+    if (!current) return { status: 'NO_SESSION', decided: false };
+    return { status: current.status, user: current.user, unit: current.unit, decided: false };
   }
 
   // Edge case: the session expired between getSession() and HSETNX, so HSETNX created a stray
@@ -73,7 +73,7 @@ async function pay(bookingId) {
   const ttl = await redis.pttl(key);
   if (ttl < 0) {
     await redis.del(key);
-    return { status: 'NO_SESSION' };
+    return { status: 'NO_SESSION', decided: false };
   }
 
   // Simulate the gateway round-trip and its success/failure decision.
@@ -86,11 +86,11 @@ async function pay(bookingId) {
       .hset(key, 'status', 'PAID', 'paidAt', String(Date.now()))
       .pexpire(key, config.PAID_SESSION_TTL_MS)
       .exec();
-    return { status: 'PAID', user: session.user, unit: session.unit };
+    return { status: 'PAID', user: session.user, unit: session.unit, decided: true };
   }
 
   await redis.hset(key, 'status', 'FAILED');
-  return { status: 'FAILED', user: session.user, unit: session.unit };
+  return { status: 'FAILED', user: session.user, unit: session.unit, decided: true };
 }
 
 /**
@@ -116,8 +116,10 @@ async function settle(userId, bookingId) {
   }
 
   if (result.status === 'FAILED') {
-    // Give the seat back immediately so other buyers can take it.
-    await releaseSeat(unit, userId);
+    // Give the seat back immediately so other buyers can take it - ONLY when this call decided FAILED.
+    if (result.decided) {
+      await releaseSeat(unit, userId);
+    }
     return { outcome: 'PAYMENT_FAILED', unit, bookingId };
   }
 
