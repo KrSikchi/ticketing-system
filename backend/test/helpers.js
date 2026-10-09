@@ -35,6 +35,7 @@ async function cleanRedis({ setReady = true } = {}) {
     await scanDelete(config.ipRlKey('*'));
   }
   await redis.del(config.streamKey);
+  if (config.legacyStreamKey) await redis.del(config.legacyStreamKey);
   if (setReady && typeof config.readyKey === 'function') {
     await redis.set(config.readyKey(), '1');
   }

@@ -294,11 +294,13 @@ TigerBeetle would make the refund/confirm pair atomic).
 
 ### Migration notes
 
-* **Payment session keys (`pay:{EVENT_ID}:<bookingId>`):** payment sessions now include the event
-  hash-tag `{EVENT_ID}` (`pay:{e1}:<bookingId>` instead of `pay:<bookingId>`) so `pay_begin.lua` can
-  atomically check `sold`, `hold` and `session` in a single Redis Cluster slot. Existing in-flight
-  `pay:<id>` sessions use the old key format; deploy during a quiet window with no pending payments
-  (or read both key forms for one release).
+* **Payment session keys (`pay:{EVENT_ID}:<bookingId>`) and bookings stream (`evt:{EVENT_ID}:bookings`):**
+  payment sessions (`pay:{e1}:<bookingId>`) and the confirmed-bookings stream (`evt:{e1}:bookings`)
+  now include the event hash-tag `{EVENT_ID}` so `hold.lua`, `confirm.lua`, `release.lua` and
+  `pay_begin.lua` each operate within a single Redis Cluster slot. `worker/persist.js` creates the
+  consumer group on `evt:{EVENT_ID}:bookings` with `MKSTREAM` and automatically drains any remaining
+  entries from the legacy `bookings` stream. Existing in-flight `pay:<id>` sessions use the old key
+  format; deploy during a quiet window with no pending payments (or read both key forms for one release).
 
 ### If 6379 or 5432 are already in use on your machine
 

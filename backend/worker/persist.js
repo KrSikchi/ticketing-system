@@ -8,7 +8,7 @@ const config = require('../src/config');
 const { redis, createRedis, waitUntilReady, isConnectionError } = require('../src/redis');
 const { pool, waitForPostgres, describeError } = require('../src/pg');
 
-const { streamKey: STREAM, group: GROUP, WORKER_ID } = config;
+const { streamKey: STREAM, legacyStreamKey: LEGACY_STREAM = 'bookings', group: GROUP, WORKER_ID } = config;
 const TAG = `[persist-${WORKER_ID}]`;
 const BATCH = 50;
 const CLAIM_IDLE_MS = 5000;   // entries pending longer than this on ANY consumer get reclaimed
@@ -16,16 +16,18 @@ const BLOCK_MS = 2000;        // how long XREADGROUP waits for new entries
 const RETRY_SLEEP_MS = 1000;  // pause when Postgres / Redis is unavailable
 
 // Blocking reads need their own connection: a blocked connection cannot serve other commands.
-const blocking = createRedis(`persist-${WORKER_ID}-blocking`);
+let blocking = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let stopping = false;
 
 /** Create the consumer group if it does not exist yet (BUSYGROUP = already there, fine). */
-async function ensureGroup() {
+async function ensureGroup(stream = STREAM, mkstream = true) {
   try {
-    await redis.xgroup('CREATE', STREAM, GROUP, '0', 'MKSTREAM');
-    console.log(`${TAG} created consumer group ${GROUP} on stream ${STREAM}`);
+    const args = ['CREATE', stream, GROUP, '0'];
+    if (mkstream) args.push('MKSTREAM');
+    await redis.xgroup(...args);
+    console.log(`${TAG} created consumer group ${GROUP} on stream ${stream}`);
   } catch (err) {
     if (!String(err.message).includes('BUSYGROUP')) throw err;
   }
@@ -39,8 +41,8 @@ function fieldsToObject(fields) {
 }
 
 /** Acknowledge and delete a fully handled entry (one round-trip). */
-async function ackAndDelete(id) {
-  await redis.multi().xack(STREAM, GROUP, id).xdel(STREAM, id).exec();
+async function ackAndDelete(id, stream = STREAM) {
+  await redis.multi().xack(stream, GROUP, id).xdel(stream, id).exec();
 }
 
 /**
@@ -96,25 +98,52 @@ async function writeToPostgres(id, note) {
 }
 
 /** Handle ONE stream entry: Postgres first, then XACK + XDEL (Redis errors propagate to the loop). */
-async function processEntry(id, fields) {
+async function processEntry(id, fields, stream = STREAM) {
   const note = fieldsToObject(fields);
   const result = await writeToPostgres(id, note);
-  await ackAndDelete(id);
+  await ackAndDelete(id, stream);
   if (result === 'persisted') console.log(`persisted ${note.bookingId} unit ${note.unit} by ${WORKER_ID}`);
 }
 
 /** Process a list of [id, fields] entries in order; stops at the first transient failure. */
-async function processEntries(entries) {
+async function processEntries(entries, stream = STREAM) {
   for (const [id, fields] of entries) {
     if (stopping) return;
-    await processEntry(id, fields);
+    await processEntry(id, fields, stream);
   }
+}
+
+/** Drain any entries remaining in the legacy "bookings" stream from before the hash-tag migration. */
+async function drainLegacyStream() {
+  if (!LEGACY_STREAM || LEGACY_STREAM === STREAM) return 0;
+  const exists = await redis.exists(LEGACY_STREAM);
+  if (!exists) return 0;
+  await ensureGroup(LEGACY_STREAM, false);
+  let drained = 0;
+  for (;;) {
+    const claimed = await redis.xautoclaim(LEGACY_STREAM, GROUP, WORKER_ID, 0, '0', 'COUNT', BATCH);
+    const claimedEntries = claimed && claimed[1] ? claimed[1] : [];
+    if (claimedEntries.length) {
+      await processEntries(claimedEntries, LEGACY_STREAM);
+      drained += claimedEntries.length;
+      continue;
+    }
+    const res = await redis.xreadgroup('GROUP', GROUP, WORKER_ID, 'COUNT', BATCH, 'STREAMS', LEGACY_STREAM, '>');
+    const entries = res && res[0] && res[0][1] ? res[0][1] : [];
+    if (!entries.length) break;
+    await processEntries(entries, LEGACY_STREAM);
+    drained += entries.length;
+  }
+  const rem = await redis.xlen(LEGACY_STREAM);
+  if (rem === 0) await redis.del(LEGACY_STREAM);
+  return drained;
 }
 
 async function loop() {
   let lastErrorMessage = null;
   while (!stopping) {
     try {
+      await drainLegacyStream();
       // a) Reclaim entries that another (dead or slow) consumer left pending for > CLAIM_IDLE_MS.
       //    Redis 7 returns [nextCursor, entries, deletedIds]; we only need the entries.
       const claimed = await redis.xautoclaim(STREAM, GROUP, WORKER_ID, CLAIM_IDLE_MS, '0', 'COUNT', BATCH);
@@ -164,7 +193,7 @@ async function shutdown(signal) {
   console.log(`${TAG} ${signal} received, finishing current batch...`);
   const force = setTimeout(() => process.exit(0), BLOCK_MS + 3000).unref();
   // The blocking XREADGROUP returns within BLOCK_MS; disconnecting it makes that immediate.
-  blocking.disconnect();
+  if (blocking) blocking.disconnect();
   await redis.quit().catch(() => redis.disconnect());
   await pool.end().catch(() => {});
   clearTimeout(force);
@@ -173,9 +202,11 @@ async function shutdown(signal) {
 
 async function main() {
   console.log(`${TAG} starting (stream=${STREAM}, group=${GROUP})`);
+  blocking = createRedis(`persist-${WORKER_ID}-blocking`);
   await waitUntilReady(redis);
   await waitUntilReady(blocking);
   await ensureGroup();
+  await drainLegacyStream();
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
   console.log(`${TAG} consuming`);
@@ -186,7 +217,11 @@ process.on('unhandledRejection', (reason) => {
   console.error(`${TAG} unhandled rejection:`, reason && reason.stack ? reason.stack : reason);
 });
 
-main().catch((err) => {
-  console.error(`${TAG} fatal: ${err.stack || err.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`${TAG} fatal: ${err.stack || err.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { ensureGroup, drainLegacyStream, processEntry, processEntries, writeToPostgres };

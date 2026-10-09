@@ -40,6 +40,7 @@ async function main() {
   const payDeleted = await scanDelete(config.payKey('*'));
   const rlDeleted = await scanDelete(config.rlKey('*'));
   const streamDeleted = await redis.del(config.streamKey);
+  if (config.legacyStreamKey) await redis.del(config.legacyStreamKey);
   try {
     await redis.xgroup('CREATE', config.streamKey, config.group, '0', 'MKSTREAM');
   } catch (err) {

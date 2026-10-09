@@ -82,8 +82,10 @@ const config = Object.freeze({
   rlKey: (userId) => `rl:${userId}`,
   /** Per-IP token bucket for the rate limiter. */
   ipRlKey: (ip) => `rl:ip:${ip}`,
-  /** Redis Stream that carries confirmed bookings to the persist workers. */
-  streamKey: 'bookings',
+  /** Redis Stream that carries confirmed bookings to the persist workers (hash-tagged with {EVENT_ID}). */
+  streamKey: `evt:{${EVENT_ID}}:bookings`,
+  /** Legacy stream key drained during migration. */
+  legacyStreamKey: 'bookings',
   /** Consumer group name on the stream. */
   group: 'persisters',
   /** Pub/Sub channel for live seat-state events (consumed by socket.js). */
